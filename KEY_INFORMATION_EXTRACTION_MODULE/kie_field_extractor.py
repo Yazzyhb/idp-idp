@@ -25,7 +25,6 @@ _REF_BODY_RE = re.compile(
     re.IGNORECASE
 )
 
-# date: handles "Alger, le ....... 02 MARS 2026" (dots on same line or date on next line)
 _DATE_RE = re.compile(
     r"Alger\s*,?\s*le\s*[.\-_\s]*\n?\s*([A-Za-z0-9][^\n]+?)(?:\n|$)",
     re.IGNORECASE
@@ -37,13 +36,14 @@ _RECEIVER_RE = re.compile(
 )
 
 _OBJET_RE = re.compile(r"Objet\s*:\s*(.+?)(?:\n|$)", re.IGNORECASE)
-_PJ_RE = re.compile(r"P\.?\s*J\.?\s*:\s*(.+?)(?:\n|$)", re.IGNORECASE)
+_PJ_RE    = re.compile(r"P\.?\s*J\.?\s*:\s*(.+?)(?:\n|$)", re.IGNORECASE)
 
+# Mesdames et Messieurs removed — it matches receiver lines
 _BODY_START_RE = re.compile(
-    r"(?:Monsieur\s*[;:,]|Mesdames?\s+et\s+Messieurs?\s*[;:,]?|"
-    r"Faisant\s+suite|Dans\s+le\s+cadre|Suite\s+à|"
+    r"(?:^|\n)(?:Monsieur\s*[;:,]|"
+    r"Faisant\s+suite|Dans\s+le\s+cadre|Suite\s+\u00e0|"
     r"J['\u2019]ai\s+l['\u2019]honneur|Je\s+vous\s+prie)\s*\n?",
-    re.IGNORECASE
+    re.IGNORECASE | re.MULTILINE
 )
 
 _BODY_END_RE = re.compile(
@@ -80,13 +80,11 @@ def _extract_ref_header(raw_text: str) -> Optional[str]:
     lines = raw_text.split("\n")
     first_lines = [l.strip() for l in lines[:15]]
 
-    # priority 1: explicit "REF :" label — must be in first lines only
     for line in first_lines:
         m = re.search(r"REF\s*:\s*(" + _REF_CODE + r")", line, re.IGNORECASE)
         if m:
             return " ".join(m.group(1).split())
 
-    # priority 2: standalone full ref code on one line (not a body Réf)
     for line in first_lines:
         if re.match(r"^Réf\s*:", line, re.IGNORECASE):
             continue
@@ -94,7 +92,6 @@ def _extract_ref_header(raw_text: str) -> Optional[str]:
         if match:
             return " ".join(match.group(0).split())
 
-    # priority 3: join consecutive lines
     for i in range(len(first_lines) - 1):
         for combo in [
             first_lines[i] + first_lines[i + 1],
@@ -106,24 +103,20 @@ def _extract_ref_header(raw_text: str) -> Optional[str]:
             if match:
                 return " ".join(match.group(0).split())
 
-    # priority 4: reconstruct from fragments
     dept_line = None
     year_line = None
-
     for line in first_lines:
         if re.match(r"^Réf\s*:", line, re.IGNORECASE):
             continue
         if re.match(
-            r'^[A-Z]{2,}(?:[/-][A-Z0-9]{2,})+(?:[/-]N[°º]\s*\d*|[/-])?$',
-            line
+            r'^[A-Z]{2,}(?:[/-][A-Z0-9]{2,})+(?:[/-]N[°º]\s*\d*|[/-])?$', line
         ) and not dept_line:
             dept_line = line.rstrip("/")
         if re.match(r'^/?\d{4}$', line) and not year_line:
             year_line = line.lstrip("/")
 
     if dept_line and year_line:
-        ref = re.sub(r'\s+', '', dept_line)
-        return f"{ref}/{year_line}"
+        return re.sub(r'\s+', '', dept_line) + "/" + year_line
 
     return None
 
@@ -134,33 +127,22 @@ def _extract_ref_body(raw_text: str) -> Optional[str]:
 
 
 def _extract_date(raw_text: str) -> Optional[str]:
-    # handle "Alger, le ......" with date on same or next line
     match = re.search(
         r"Alger\s*,?\s*le\s*([.\-_\s]{0,20})\n?\s*([A-Za-z0-9][^\n]{3,}?)(?:\n|$)",
         raw_text, re.IGNORECASE
     )
     if not match:
         return None
-
-    # group 1 = dots/spaces, group 2 = actual date candidate
-    dots = match.group(1).strip()
     candidate = match.group(2).strip()
-
-    # if dots are on same line and candidate is on next line
-    # candidate should look like a date
     date_str = re.sub(r'^[.\-_\s]+', '', candidate).strip()
-
     if not date_str or len(date_str.replace(" ", "")) < 4:
         return None
     if re.match(r'^[\W\s]+$', date_str):
         return None
-    # reject if it looks like a receiver line
     if re.match(r"(?:Messieurs?|Mesdames?|Monsieur)\s+", date_str, re.IGNORECASE):
         return None
-    # reject single OCR noise characters
     if len(date_str) <= 2:
         return None
-
     return date_str
 
 
@@ -203,15 +185,29 @@ def _extract_pj(raw_text: str) -> Optional[str]:
 
 
 def _extract_body(raw_text: str) -> Optional[str]:
-    start_match = _BODY_START_RE.search(raw_text)
-    if not start_match:
-        start_match = re.search(
-            r"Monsieur\s*,\s*\n", raw_text, re.IGNORECASE
-        )
-    if not start_match:
-        return None
+    all_matches = list(_BODY_START_RE.finditer(raw_text))
 
-    remaining = raw_text[start_match.end():]
+    if not all_matches:
+        m = re.search(r"(?:^|\n)Monsieur\s*,\s*\n", raw_text, re.IGNORECASE | re.MULTILINE)
+        if not m:
+            return None
+        all_matches = [m]
+
+    # pick first match not followed by header-like content
+    best_match = None
+    for match in all_matches:
+        remaining = raw_text[match.end():].strip()
+        first_line = remaining.split("\n")[0].strip() if remaining else ""
+        if re.match(r"(?:Objet|Réf|P\.J|Messieurs?|Mesdames?)", first_line, re.IGNORECASE):
+            continue
+        best_match = match
+        break
+
+    if not best_match:
+        best_match = all_matches[-1]
+
+    # use start() to include the trigger phrase in the body
+    remaining = raw_text[best_match.start():].lstrip("\n")
     end_match = _BODY_END_RE.search(remaining)
     body = remaining[:end_match.start()].strip() if end_match else remaining.strip()
     return body or None
