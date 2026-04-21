@@ -1,0 +1,7 @@
+﻿doc,doc_num,ocr_confidence,full_cer,full_wer,ref_header_em,ref_header_f1,date_em,date_f1,sender_em,sender_f1,receiver_em,receiver_f1,objet_em,objet_f1,pj_em,pj_f1,body_em,body_f1
+doc_001_tmpl1_SRI-2024-001_scan_bureau.pdf,001,0.97,0.2696,0.3258,1,1.0,1,1.0,1,1.0,1,1.0,1,1.0,0,0.0,1,1.0
+doc_002_tmpl2_SAD-2024-002_scan_bureau.pdf,002,0.98,0.5836,0.798,1,1.0,1,1.0,1,1.0,0,0.0,1,1.0,0,0.0,0,0.9804
+doc_003_tmpl3_DIS-2023-0003_scan_bureau.pdf,003,0.98,0.3031,0.3084,1,1.0,1,1.0,1,1.0,1,1.0,1,1.0,0,0.0,0,0.963
+doc_004_tmpl1_SRI-2023-0004_scan_bureau.pdf,004,0.97,0.2289,0.2632,1,1.0,1,1.0,1,1.0,1,1.0,0,0.4444,0,0.0,0,0.9718
+doc_005_tmpl2_DIS-2023-0005_scan_bureau.pdf,005,0.98,0.3134,0.3069,1,1.0,1,1.0,0,0.0,0,0.0,1,1.0,0,0.0,0,0.9737
+doc_006_tmpl3_SGRC-2023-0006_scan_bureau.pdf,006,0.98,0.2823,0.2957,1,1.0,1,1.0,1,1.0,1,1.0,1,1.0,0,0.0,0,0.9724

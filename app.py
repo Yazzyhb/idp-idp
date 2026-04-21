@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 
 import streamlit as st
+import cv2
 
 st.set_page_config(page_title="IDP System", page_icon="📄", layout="wide")
 
@@ -26,14 +27,31 @@ def load_pipeline():
     ocr_mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(ocr_mod)
 
-    from layout import get_predictors
-    get_predictors()
+    layout_spec = importlib.util.spec_from_file_location("layout", OCR_PATH / "layout.py")
+    layout_mod = importlib.util.module_from_spec(layout_spec)
+    layout_spec.loader.exec_module(layout_mod)
+    layout_mod.get_predictors()
 
     spec2 = importlib.util.spec_from_file_location("kie_extractor", KIE_PATH / "extractor.py")
     kie_mod = importlib.util.module_from_spec(spec2)
     spec2.loader.exec_module(kie_mod)
 
     return ocr_mod.process_document, kie_mod.extract
+
+
+def _draw_table_boxes(image, table_bboxes):
+    if not table_bboxes:
+        return image
+    overlay = image.copy()
+    for x1, y1, x2, y2 in table_bboxes:
+        cv2.rectangle(overlay, (int(x1), int(y1)), (int(x2), int(y2)), (0, 140, 255), 6)
+    return overlay
+
+
+def _to_display_image(image):
+    if len(image.shape) == 3 and image.shape[2] == 3:
+        return cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    return image
 
 
 process_document, extract = load_pipeline()
@@ -109,12 +127,14 @@ if uploaded_file and process_btn:
         tmp_path = tmp.name
     try:
         with st.spinner("Running OCR pipeline..."):
-            ocr_output = process_document(tmp_path)
+            ocr_result = process_document(tmp_path, include_debug=True)
+            ocr_output, debug_pages = ocr_result
         with st.spinner("Extracting key information..."):
             doc_id     = Path(uploaded_file.name).stem
             kie_output = extract(ocr_output, doc_id=doc_id)
         st.session_state["ocr_output"] = ocr_output
         st.session_state["kie_output"] = kie_output
+        st.session_state["debug_pages"] = debug_pages
         st.session_state["doc_stem"]   = doc_id
     finally:
         os.unlink(tmp_path)
@@ -126,6 +146,7 @@ if uploaded_file and process_btn:
 if "ocr_output" in st.session_state and "kie_output" in st.session_state:
     ocr_output = st.session_state["ocr_output"]
     kie_output = st.session_state["kie_output"]
+    debug_pages = st.session_state.get("debug_pages", [])
     doc_stem   = st.session_state["doc_stem"]
 
     st.success(
@@ -144,8 +165,8 @@ if "ocr_output" in st.session_state and "kie_output" in st.session_state:
         data=_build_summary_csv(kie_output).encode("utf-8-sig"),
         file_name=f"{doc_stem}_summary.csv", mime="text/csv", use_container_width=True)
 
-    tab1, tab2, tab3, tab4 = st.tabs([
-        "📋 Extracted Fields", "📊 Tables", "📝 Raw Text", "🔧 Full JSON"
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        "📋 Extracted Fields", "📊 Tables", "📝 Raw Text", "🧪 Preprocess", "🔧 Full JSON"
     ])
 
     for page_data in kie_output["pages"]:
@@ -204,11 +225,7 @@ if "ocr_output" in st.session_state and "kie_output" in st.session_state:
                         f"method: `{table['method']}`"
                     )
                     data = table["data"]
-                    if data:
-                        df = pd.DataFrame(
-                            data[1:], columns=data[0]
-                        ) if len(data) > 1 else pd.DataFrame(data)
-                        st.dataframe(df, use_container_width=True)
+
                     with st.expander("View Markdown"):
                         st.code(table.get("markdown", ""), language="markdown")
                     st.divider()
@@ -219,6 +236,20 @@ if "ocr_output" in st.session_state and "kie_output" in st.session_state:
                          label_visibility="collapsed", key=f"raw_{page_num}")
 
         with tab4:
+            st.subheader(f"Page {page_num} — Preprocessing")
+            debug_page = next((p for p in debug_pages if p["page"] == page_num), None)
+            if not debug_page:
+                st.info("No debug images available for this page.")
+            else:
+                col_a, col_b = st.columns(2)
+                col_a.markdown("**Raw page**")
+                col_a.image(_to_display_image(debug_page["raw_image"]), use_container_width=True)
+                col_b.markdown("**Preprocessed page**")
+                pre_img = _draw_table_boxes(debug_page["preprocessed_image"], debug_page.get("table_bboxes", []))
+                col_b.image(_to_display_image(pre_img), use_container_width=True)
+                st.caption(f"Tables detected on this page: {debug_page.get('table_count', 0)}")
+
+        with tab5:
             st.subheader("Full Pipeline Output (JSON)")
             st.json({"ocr": ocr_output, "kie": kie_output})
 
