@@ -1,157 +1,221 @@
-# Intelligent Document Processing System
-### Algérie Poste — French Administrative Documents
-**Version 1.0** | OCR + Key Information Extraction
+# Intelligent Document Processing (IDP)
 
----
+OCR + Key Information Extraction for French administrative letters.
 
+This repository contains:
+- A Streamlit app for end-to-end document processing
+- An OCR module for page rendering, preprocessing, OCR, and table extraction
+- A KIE module for extracting structured fields from OCR text
+- Evaluation scripts for OCR and KIE quality analysis
 
+## What the Pipeline Does
 
+Given a PDF or image document, the system:
+1. Loads and renders pages (PDF supported)
+2. Applies adaptive preprocessing
+3. Runs OCR with Surya predictors
+4. Extracts tables (img2table primary, TATR fallback)
+5. Builds per-page OCR output
+6. Extracts structured KIE fields
+7. Returns document-level JSON + optional CSV exports
 
+## Extracted KIE Fields
+
+For each page, the KIE module extracts:
+- sender
+- receiver
+- date
+- ref_header
+- ref_body
+- objet
+- pj
+- body
+
+Document-level type output:
+- doc_type: lettre_administrative
+- doc_subtype: demande | transmission | information | autre
 
 ## Installation
 
-**Step 1 — Install dependencies**
+Python 3.10+ is recommended.
 
+1. Create and activate a virtual environment
 
+```bash
+python -m venv .venv
+.venv\Scripts\activate
 ```
+
+2. Install dependencies
+
+```bash
 pip install -r OCR_MODULE/requirements.txt
 pip install -r KEY_INFORMATION_EXTRACTION_MODULE/requirements.txt
 pip install streamlit pypdfium2 polars
 ```
 
-**Step 2 — Launch the application**
+Optional API dependencies:
 
+```bash
+pip install fastapi uvicorn
 ```
+
+## Run the Streamlit App
+
+```bash
 streamlit run app.py
 ```
 
-The application will open automatically in your browser at `http://localhost:8501`.
+Open http://localhost:8501.
 
-> **Note:** The first launch takes several minutes as AI models are downloaded and cached automatically. Subsequent launches are fast.
+Notes:
+- First run is slower because model weights are downloaded and cached.
+- Supported upload formats: PDF, JPG, JPEG, PNG.
 
----
+## Direct OCR Module Usage
 
-## How to Use
+Run OCR on one document directly from CLI:
 
-### Step 1 — Upload a Document
-In the left sidebar, click **Browse files** and select a document.
+```bash
+python OCR_MODULE/main.py <path_to_document>
+```
 
-**Supported formats:** PDF, JPG, JPEG, PNG
+The command prints OCR JSON to stdout.
 
+## Evaluation Workflows
 
----
+### 1) OCR Text Evaluation
 
-### Step 2 — Process the Document
-Click the **Process Document** button in the sidebar.
+Compares OCR text with ground-truth text reconstructed from documents/generated_documents.csv.
 
-The system will:
-1. Render each page at high resolution
-2. Apply image preprocessing (deskew, denoise, binarize)
-3. Run OCR to detect and recognize all text
-4. Detect and extract any tables present
-5. Extract key information fields using linguistic rules
-6. Detect handwritten signatures
+```bash
+python ocr_text_evaluator.py
+python ocr_text_evaluator.py --docs 5
+python ocr_text_evaluator.py --all-pages
+python ocr_text_evaluator.py --with-tables
+```
 
-Processing time is approximately **2–4 minutes per page** on CPU.
+Output file:
+- ocr_text_evaluation_results.csv
 
----
+### 2) End-to-End OCR + KIE Evaluation
 
-### Step 3 — Review Results
+Runs full OCR pipeline and KIE extraction, then computes OCR and per-field KIE metrics.
 
-Results are organized across **4 tabs:**
+```bash
+python evaluator.py
+python evaluator.py --docs 10
+python evaluator.py --no-tables
+python evaluator.py --with-tables
+```
 
-#### 📋 Extracted Fields
-Displays all extracted structured information:
+Output file:
+- evaluation_results.csv
 
-| Field | Description |
-|---|---|
-| Document Type | Automatically classified (lettre administrative + subtype) |
-| Sender | Organization or person at the top of the document |
-| Receiver | Addressee(s) of the letter |
-| Date | Date of the document |
-| Reference (Header) | Reference code in the document header |
-| Reference (Body) | Reference cited within the body text |
-| Object | Subject line of the letter |
-| Body | Main body text of the letter |
-| P.J | Attachments listed |
-| OCR Confidence | Percentage confidence of the OCR engine |
+### 3) KIE Evaluation from Existing OCR CSV
 
-#### 📊 Tables
-Any tables detected in the document are displayed as interactive dataframes with row/column counts and extraction confidence.
+Uses OCR text already stored in ocr_text_evaluation_results.csv, then evaluates only KIE extraction quality.
 
-#### 📝 Raw Text
-The complete raw OCR output for each page, useful for verifying extraction accuracy.
+```bash
+python kie_evaluator_from_ocr_csv.py
+python kie_evaluator_from_ocr_csv.py --docs 20
+```
 
-#### 🔧 Full JSON
-The complete structured output of the entire pipeline in JSON format, including all OCR metadata and extracted fields.
+Output file:
+- kie_evaluation_results.csv
 
----
+### 4) KIE Error Analysis Utilities
 
-### Step 4 — Export Results
+Generate error-focused reports from kie_evaluation_results.csv:
 
-Three download buttons are available at the top of the results:
+```bash
+python kie_error_analysis.py
+python kie_error_analysis.py --top 30
+python kie_error_pattern_summary.py
+```
 
-| Button | Format | Contents |
-|---|---|---|
-| ⬇️ Full JSON | `.json` | Complete pipeline output — all OCR data, tables, fields, confidence scores |
-| ⬇️ Full CSV | `.csv` | One row per page — all extracted fields, suitable for database import |
-| ⬇️ Summary CSV | `.csv` | One row per page — document ID, object, and body text only |
+Output files:
+- kie_error_analysis_top20.txt
+- kie_error_pattern_summary.txt
 
-> CSV files are encoded in **UTF-8 with BOM** for correct display of French characters in Microsoft Excel.
+### 5) Evaluation Viewer (Streamlit)
 
----
+Interactive side-by-side comparison of extracted fields vs ground truth:
 
-## Extracted Fields — Technical Details
+```bash
+streamlit run eval_viewer.py
+```
 
-The KIE module extracts the following fields from `lettre_administrative` documents:
+## Production Warmup and API Startup Example
 
-| Field | Extraction Method | Notes |
-|---|---|---|
-| `sender` | First 4 non-reference lines | Stops at first reference code or REF: label |
-| `ref_header` | Regex on first 15 lines | Matches patterns like `DGAP/DSOCG/Nº 99512026` |
-| `ref_body` | Regex on full text | Matches `Réf :` or `REF :` labels |
-| `date` | Regex after `Alger, le` | Returns null if date field is blank |
-| `receiver` | Regex on Messieurs/Mesdames/Monsieur lines | Collects up to 4 consecutive lines |
-| `objet` | Regex after `Objet :` label | Single line |
-| `pj` | Regex after `P.J :` label | Single line |
-| `body` | Between opening and closing formula | Starts at Faisant suite / J'ai l'honneur / etc. |
+Preload heavy models once:
 
-**Document subtypes detected:** `demande`, `transmission`, `information`, `autre`
+```bash
+python preload_models.py
+```
 
----
+Run the FastAPI startup example:
 
+```bash
+uvicorn fastapi_startup_example:app --host 0.0.0.0 --port 8000
+```
 
+Health endpoint:
+- GET /health
 
-## Known Limitations
+## Input and Output Overview
 
-- **Handwritten dates** are not extracted — the date field will show *(blank/handwritten)*
-- **Rotated or heavily degraded** scans may produce lower OCR confidence
-- **Arabic text** in headers is intentionally excluded from the sender field
-- Processing speed depends on document page count and CPU performance
+Input sources:
+- App uploads (PDF/JPG/JPEG/PNG)
+- Evaluation corpus in documents/
+- Ground truth CSV in documents/generated_documents.csv
 
----
+Main generated artifacts:
+- evaluation_results.csv
+- ocr_text_evaluation_results.csv
+- kie_evaluation_results.csv
+- kie_error_analysis_top20.txt
+- kie_error_pattern_summary.txt
+
+App exports per processed document:
+- Full JSON
+- Full CSV (all extracted fields)
+- Summary CSV (doc_id, page, objet, body)
 
 ## Project Structure
 
+```text
+.
+|- app.py
+|- eval_viewer.py
+|- evaluator.py
+|- ocr_text_evaluator.py
+|- kie_evaluator_from_ocr_csv.py
+|- kie_error_analysis.py
+|- kie_error_pattern_summary.py
+|- preload_models.py
+|- fastapi_startup_example.py
+|- documents/
+|  |- generated_documents.csv
+|- OCR_MODULE/
+|  |- main.py
+|  |- preprocessor.py
+|  |- layout.py
+|  |- ocr_engine.py
+|  |- table_extractor.py
+|  |- output_builder.py
+|  |- requirements.txt
+|- KEY_INFORMATION_EXTRACTION_MODULE/
+|  |- extractor.py
+|  |- kie_doc_type.py
+|  |- kie_field_extractor.py
+|  |- kie_output_builder.py
+|  |- requirements.txt
 ```
-THE IDP SYSTEM/
-├── app.py                              ← Main Streamlit application
-├── OCR_MODULE/
-│   ├── main.py                         ← OCR pipeline entry point
-│   ├── preprocessor.py                 ← Image preprocessing (deskew, denoise, binarize)
-│   ├── layout.py                       ← Surya model loader
-│   ├── ocr_engine.py                   ← OCR engine (Surya + TrOCR)
-│   ├── table_extractor.py              ← Table detection and extraction
-│   └── output_builder.py               ← Page output formatter
-├── KEY_INFORMATION_EXTRACTION_MODULE/
-│   ├── extractor.py                    ← KIE pipeline entry point
-│   ├── kie_field_extractor.py          ← Regex field extractors
-│   ├── kie_doc_type.py                 ← Document type classifier
-│   └── kie_output_builder.py           ← KIE output formatter
-├── CLASSIFICATION MODULE/              ← In development
-└── TOPIC MODELING MODULE/              ← In development
-```
 
+## Known Limitations
 
-
-*Algérie Poste — Intelligent Document Processing System — v1.0*
+- Handwritten-heavy content is difficult in CPU-only mode.
+- Degraded scans and strong rotations can reduce OCR confidence.
+- KIE rules are tuned for French administrative letter templates and may not generalize to unrelated layouts.
+- First-run latency is expected due to model downloads.

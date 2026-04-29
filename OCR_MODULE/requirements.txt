@@ -10,7 +10,7 @@ Pillow==11.3.0
 surya-ocr==0.17.1
 
 # Handwritten OCR
-transformers==4.52.4
+transformers==4.56.1
 torch==2.7.1
 
 # Table extraction
