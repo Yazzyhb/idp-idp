@@ -1,3 +1,4 @@
 spacy==3.7.5
 fr-core-news-lg @ https://github.com/explosion/spacy-models/releases/download/fr_core_news_lg-3.7.0/fr_core_news_lg-3.7.0-py3-none-any.whl
 regex==2026.4.4
+rapidfuzz==3.13.0

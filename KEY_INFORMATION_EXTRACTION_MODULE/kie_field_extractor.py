@@ -1,5 +1,11 @@
 import re
+from difflib import SequenceMatcher
 from typing import Optional
+
+try:
+    from rapidfuzz import fuzz
+except Exception:
+    fuzz = None
 
 
 def _strip_html(text: str) -> str:
@@ -576,16 +582,407 @@ def _crf_like_header_decode(raw_text: str) -> tuple[Optional[str], Optional[str]
     return sender, receiver
 
 
-def extract_fields(raw_text: str) -> dict:
+def _normalize_confidence(value: float | int | None) -> float:
+    if value is None:
+        return 0.0
+    try:
+        conf = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if conf > 1.0:
+        conf /= 100.0
+    return max(0.0, min(conf, 1.0))
+
+
+def _text_similarity(left: str, right: str) -> float:
+    left_norm = (left or "").strip().lower()
+    right_norm = (right or "").strip().lower()
+    if not left_norm or not right_norm:
+        return 0.0
+    if fuzz is not None:
+        return fuzz.partial_ratio(left_norm, right_norm) / 100.0
+    return SequenceMatcher(None, left_norm, right_norm).ratio()
+
+
+def _strip_html_whitespace(value: str) -> str:
+    return re.sub(r"\s+", " ", (value or "").strip())
+
+
+def _make_candidate(
+    field_name: str,
+    strategy: str,
+    value: Optional[str],
+    strategy_score: float,
+    page_confidence: float,
+    reason: str = "",
+) -> Optional[dict]:
+    if not value:
+        return None
+    cleaned = _strip_html_whitespace(str(value))
+    if not cleaned:
+        return None
+
+    strategy_score = max(0.0, min(float(strategy_score), 1.0))
+    page_confidence = _normalize_confidence(page_confidence)
+    combined = (0.8 * strategy_score) + (0.2 * page_confidence)
+
+    if field_name == "objet":
+        token_count = len(cleaned.split())
+        if 3 <= token_count <= 16:
+            combined += 0.04
+        elif token_count > 24:
+            combined -= 0.08
+    elif field_name in {"sender", "receiver"}:
+        if len(cleaned) > 5:
+            combined += 0.02
+        if _is_noise(cleaned):
+            combined -= 0.12
+    elif field_name == "body" and len(cleaned.split()) > 20:
+        combined += 0.03
+
+    combined = max(0.0, min(combined, 1.0))
+    return {
+        "field": field_name,
+        "strategy": strategy,
+        "value": cleaned,
+        "strategy_score": round(strategy_score, 4),
+        "page_confidence": round(page_confidence, 4),
+        "score": round(combined, 4),
+        "reason": reason,
+    }
+
+
+def _pick_best_candidate(candidates: list[dict | None]) -> Optional[dict]:
+    valid = [candidate for candidate in candidates if candidate and candidate.get("value")]
+    if not valid:
+        return None
+    return sorted(valid, key=lambda c: (c["score"], c["strategy_score"], len(c["value"])), reverse=True)[0]
+
+
+def _value_after_label(line: str, label_patterns: list[str]) -> Optional[str]:
+    cleaned = (line or "").strip()
+    if not cleaned:
+        return None
+    if ":" in cleaned:
+        value = cleaned.split(":", 1)[1].strip()
+        return value or None
+    for pattern in label_patterns:
+        match = re.match(pattern, cleaned, re.IGNORECASE)
+        if match:
+            value = cleaned[match.end():].strip()
+            return value or None
+    return None
+
+
+def _best_fuzzy_label_line(lines: list[str], aliases: list[str], window: int = 18) -> tuple[Optional[int], Optional[str], float]:
+    best_idx = None
+    best_line = None
+    best_score = 0.0
+    for idx, line in enumerate(lines[:window]):
+        candidate = (line or "").strip()
+        if not candidate:
+            continue
+        score = max((_text_similarity(candidate, alias) for alias in aliases), default=0.0)
+        if score > best_score:
+            best_score = score
+            best_idx = idx
+            best_line = candidate
+    return best_idx, best_line, best_score
+
+
+def _extract_sender_regex(raw_text: str) -> Optional[str]:
+    lines = [line.strip() for line in _normalized_lines(raw_text) if line.strip()]
+    for line in lines[:12]:
+        match = re.match(r"(?:De|Source|Exp[eé]diteur)\s*:\s*(.+)", line, re.IGNORECASE)
+        if match:
+            value = match.group(1).strip()
+            if value and not _is_noise(value):
+                return value
+    return None
+
+
+def _extract_sender_fuzzy(raw_text: str) -> Optional[str]:
+    lines = [line.strip() for line in _normalized_lines(raw_text) if line.strip()]
+    idx, line, score = _best_fuzzy_label_line(lines, ["de", "source", "expediteur"], window=12)
+    if line is None or score < 0.68:
+        return None
+    value = _value_after_label(line, [r"(?:De|Source|Exp[eé]diteur)\s*:\s*"])
+    if not value and idx is not None and idx + 1 < len(lines):
+        value = lines[idx + 1].strip()
+    return value or None
+
+
+def _extract_receiver_regex(raw_text: str) -> Optional[str]:
+    lines = [line.strip() for line in _normalized_lines(raw_text) if line.strip()]
+    for line in lines[:15]:
+        match = re.match(r"(?:A|À)\s*(?:l['\u2019]attention\s+(?:de|du|des)|:)\s*(.+)", line, re.IGNORECASE)
+        if match:
+            value = match.group(1).strip()
+            if value and not _is_noise(value):
+                return value
+    return None
+
+
+def _extract_receiver_fuzzy(raw_text: str) -> Optional[str]:
+    lines = [line.strip() for line in _normalized_lines(raw_text) if line.strip()]
+    idx, line, score = _best_fuzzy_label_line(lines, ["a l'attention", "destinataire", "destination", "a"], window=16)
+    if line is None or score < 0.66:
+        return None
+    value = _value_after_label(line, [r"(?:A|À)\s*(?:l['\u2019]attention\s+(?:de|du|des)|:)"])
+    if not value and idx is not None and idx + 1 < len(lines):
+        value = lines[idx + 1].strip()
+    return value or None
+
+
+def _extract_ref_header_regex(raw_text: str) -> Optional[str]:
+    norm_text = "\n".join(_normalized_lines(raw_text))
+    match = _REF_BODY_RE.search(norm_text)
+    if match:
+        return match.group(1).strip()
+    for line in norm_text.split("\n")[:25]:
+        if re.match(r"^Réf\s*:|^REF\s*:", line, re.IGNORECASE):
+            value = re.sub(r"^(?:Réf|REF)\s*:\s*", "", line, flags=re.IGNORECASE).strip()
+            if value:
+                return value
+    return None
+
+
+def _extract_ref_header_fuzzy(raw_text: str) -> Optional[str]:
+    lines = [line.strip() for line in _normalized_lines(raw_text) if line.strip()]
+    idx, line, score = _best_fuzzy_label_line(lines, ["ref", "réf", "reference"], window=20)
+    if line is None or score < 0.70:
+        return None
+    value = _value_after_label(line, [r"(?:Réf|REF|Reference)\s*:\s*"])
+    if not value and idx is not None and idx + 1 < len(lines):
+        value = lines[idx + 1].strip()
+    return value or None
+
+
+def _extract_date_regex(raw_text: str) -> Optional[str]:
+    norm_text = "\n".join(_normalized_lines(raw_text))
+    match = re.search(r"\b(\d{2}[/\-]\d{2}[/\-]\d{4})\b", norm_text)
+    if match:
+        return match.group(1)
+    match = re.search(r"Alger\s*:?,?\s*(?:le\s*)?\n\s*(\d{2}[/\-]\d{2}[/\-]\d{4})", norm_text, re.IGNORECASE)
+    if match:
+        return match.group(1)
+    return None
+
+
+def _extract_date_fuzzy(raw_text: str) -> Optional[str]:
+    lines = [line.strip() for line in _normalized_lines(raw_text) if line.strip()]
+    idx, line, score = _best_fuzzy_label_line(lines, ["date", "alger", "le"], window=18)
+    if line is None or score < 0.60:
+        return None
+    match = re.search(r"\b(\d{2}[/\-]\d{2}[/\-]\d{4})\b", line)
+    if match:
+        return match.group(1)
+    if idx is not None and idx + 1 < len(lines):
+        match = re.search(r"\b(\d{2}[/\-]\d{2}[/\-]\d{4})\b", lines[idx + 1])
+        if match:
+            return match.group(1)
+    return None
+
+
+def _extract_objet_regex(raw_text: str) -> Optional[str]:
+    norm_text = "\n".join(_normalized_lines(raw_text))
+    match = _OBJET_RE.search(norm_text)
+    if match:
+        value = match.group(1).strip()
+        return value or None
+    return None
+
+
+def _extract_objet_fuzzy(raw_text: str) -> Optional[str]:
+    lines = [line.strip() for line in _normalized_lines(raw_text) if line.strip()]
+    idx, line, score = _best_fuzzy_label_line(lines, ["objet", "subject"], window=24)
+    if line is None or score < 0.72:
+        return None
+    value = _value_after_label(line, [r"Objet\s*:\s*", r"Subject\s*:\s*"])
+    if not value and idx is not None and idx + 1 < len(lines):
+        value = lines[idx + 1].strip()
+    return value or None
+
+
+def _extract_pj_regex(raw_text: str) -> Optional[str]:
+    norm_text = "\n".join(_normalized_lines(raw_text))
+    match = _PJ_RE.search(norm_text)
+    if match:
+        value = match.group(1).strip()
+        return value or None
+    return None
+
+
+def _extract_pj_fuzzy(raw_text: str) -> Optional[str]:
+    lines = [line.strip() for line in _normalized_lines(raw_text) if line.strip()]
+    idx, line, score = _best_fuzzy_label_line(lines, ["pj", "pieces jointes", "annexes", "copie"], window=24)
+    if line is None or score < 0.64:
+        return None
+    value = _value_after_label(line, [r"(?:P\.?\s*J\.?|Pi[eè]ces?\s+jointes?|Annexes?|Copie\s+[aà])\s*:?"])
+    if not value and idx is not None and idx + 1 < len(lines):
+        value = lines[idx + 1].strip()
+    return value or None
+
+
+def _extract_body_regex(raw_text: str) -> Optional[str]:
+    norm_text = "\n".join(_normalized_lines(raw_text))
+    match = _BODY_START_RE.search(norm_text)
+    if not match:
+        match = re.search(r"(?:^|\n)Monsieur\s*,\s*\n", norm_text, re.IGNORECASE | re.MULTILINE)
+        if not match:
+            return None
+
+    remaining = norm_text[match.start():].lstrip("\n")
+    end_match = _BODY_END_RE.search(remaining)
+    body = remaining[:end_match.start()].strip() if end_match else remaining.strip()
+    return body or None
+
+
+def _extract_body_fuzzy(raw_text: str) -> Optional[str]:
+    lines = [line.strip() for line in _normalized_lines(raw_text)]
+    compact_lines = [line for line in lines if line]
+    idx, line, score = _best_fuzzy_label_line(
+        compact_lines,
+        ["monsieur", "madame", "j'ai l'honneur", "veuillez", "nous vous"],
+        window=40,
+    )
+    if line is None or score < 0.58:
+        return None
+    body_lines = []
+    started = False
+    for current in compact_lines[idx:]:
+        if not current:
+            if started:
+                break
+            continue
+        if not started:
+            started = True
+        body_lines.append(current)
+    body = "\n".join(body_lines).strip()
+    end_match = _BODY_END_RE.search(body)
+    if end_match:
+        body = body[:end_match.start()].strip()
+    return body or None
+
+
+def _extract_sender_detailed(raw_text: str, page_confidence: float) -> tuple[Optional[str], list[dict]]:
+    candidates = [
+        _make_candidate("sender", "regex", _extract_sender_regex(raw_text), 0.96, page_confidence, "explicit sender label"),
+        _make_candidate("sender", "heuristic", _extract_sender(raw_text), 0.88, page_confidence, "header window and cleanup rules"),
+        _make_candidate("sender", "rapid_fuzzy", _extract_sender_fuzzy(raw_text), 0.82, page_confidence, "fuzzy label match"),
+    ]
+    best = _pick_best_candidate(candidates)
+    return (best["value"] if best else None, [candidate for candidate in candidates if candidate])
+
+
+def _extract_receiver_detailed(raw_text: str, page_confidence: float) -> tuple[Optional[str], list[dict]]:
+    candidates = [
+        _make_candidate("receiver", "regex", _extract_receiver_regex(raw_text), 0.95, page_confidence, "explicit receiver label"),
+        _make_candidate("receiver", "heuristic", _extract_receiver(raw_text), 0.87, page_confidence, "contextual header scan"),
+        _make_candidate("receiver", "rapid_fuzzy", _extract_receiver_fuzzy(raw_text), 0.80, page_confidence, "fuzzy label match"),
+    ]
+    best = _pick_best_candidate(candidates)
+    return (best["value"] if best else None, [candidate for candidate in candidates if candidate])
+
+
+def _extract_date_detailed(raw_text: str, page_confidence: float) -> tuple[Optional[str], list[dict]]:
+    candidates = [
+        _make_candidate("date", "regex", _extract_date_regex(raw_text), 0.93, page_confidence, "explicit date pattern"),
+        _make_candidate("date", "heuristic", _extract_date(raw_text), 0.84, page_confidence, "alger/date window heuristics"),
+        _make_candidate("date", "rapid_fuzzy", _extract_date_fuzzy(raw_text), 0.72, page_confidence, "fuzzy date label match"),
+    ]
+    best = _pick_best_candidate(candidates)
+    return (best["value"] if best else None, [candidate for candidate in candidates if candidate])
+
+
+def _extract_ref_header_detailed(raw_text: str, page_confidence: float) -> tuple[Optional[str], list[dict]]:
+    candidates = [
+        _make_candidate("ref_header", "regex", _extract_ref_header_regex(raw_text), 0.97, page_confidence, "explicit reference pattern"),
+        _make_candidate("ref_header", "heuristic", _extract_ref_header(raw_text), 0.90, page_confidence, "reference window scan"),
+        _make_candidate("ref_header", "rapid_fuzzy", _extract_ref_header_fuzzy(raw_text), 0.78, page_confidence, "fuzzy label match"),
+    ]
+    best = _pick_best_candidate(candidates)
+    return (best["value"] if best else None, [candidate for candidate in candidates if candidate])
+
+
+def _extract_objet_detailed(raw_text: str, page_confidence: float) -> tuple[Optional[str], list[dict]]:
+    candidates = [
+        _make_candidate("objet", "regex", _extract_objet_regex(raw_text), 0.95, page_confidence, "explicit objet label"),
+        _make_candidate("objet", "heuristic", _extract_objet(raw_text), 0.89, page_confidence, "multi-candidate subject heuristics"),
+        _make_candidate("objet", "rapid_fuzzy", _extract_objet_fuzzy(raw_text), 0.83, page_confidence, "fuzzy label match"),
+    ]
+    best = _pick_best_candidate(candidates)
+    return (best["value"] if best else None, [candidate for candidate in candidates if candidate])
+
+
+def _extract_pj_detailed(raw_text: str, page_confidence: float) -> tuple[Optional[str], list[dict]]:
+    candidates = [
+        _make_candidate("pj", "regex", _extract_pj_regex(raw_text), 0.94, page_confidence, "explicit PJ label"),
+        _make_candidate("pj", "heuristic", _extract_pj(raw_text), 0.88, page_confidence, "attachment count and spillover heuristics"),
+        _make_candidate("pj", "rapid_fuzzy", _extract_pj_fuzzy(raw_text), 0.75, page_confidence, "fuzzy label match"),
+    ]
+    best = _pick_best_candidate(candidates)
+    return (best["value"] if best else None, [candidate for candidate in candidates if candidate])
+
+
+def _extract_body_detailed(raw_text: str, page_confidence: float) -> tuple[Optional[str], list[dict]]:
+    candidates = [
+        _make_candidate("body", "regex", _extract_body_regex(raw_text), 0.92, page_confidence, "body start/end regex"),
+        _make_candidate("body", "heuristic", _extract_body(raw_text), 0.86, page_confidence, "body window heuristics"),
+        _make_candidate("body", "rapid_fuzzy", _extract_body_fuzzy(raw_text), 0.70, page_confidence, "fuzzy greeting/body cue"),
+    ]
+    best = _pick_best_candidate(candidates)
+    return (best["value"] if best else None, [candidate for candidate in candidates if candidate])
+
+
+def extract_fields_detailed(raw_text: str, page_confidence: float = 0.0) -> dict:
     clean_text = _strip_html(raw_text)
     seq_sender, seq_receiver = _crf_like_header_decode(clean_text)
+
+    fields = {}
+    field_details = {}
+
+    sender_value, sender_candidates = _extract_sender_detailed(clean_text, page_confidence)
+    if not sender_value:
+        sender_value = seq_sender
+    fields["sender"] = sender_value
+    field_details["sender"] = {"selected": sender_value, "candidates": sender_candidates}
+
+    ref_value, ref_candidates = _extract_ref_header_detailed(clean_text, page_confidence)
+    fields["ref_header"] = ref_value
+    field_details["ref_header"] = {"selected": ref_value, "candidates": ref_candidates}
+
+    fields["ref_body"] = _extract_ref_body(clean_text)
+    field_details["ref_body"] = {"selected": fields["ref_body"], "candidates": []}
+
+    date_value, date_candidates = _extract_date_detailed(clean_text, page_confidence)
+    fields["date"] = date_value
+    field_details["date"] = {"selected": date_value, "candidates": date_candidates}
+
+    receiver_value, receiver_candidates = _extract_receiver_detailed(clean_text, page_confidence)
+    if not receiver_value:
+        receiver_value = seq_receiver
+    fields["receiver"] = receiver_value
+    field_details["receiver"] = {"selected": receiver_value, "candidates": receiver_candidates}
+
+    objet_value, objet_candidates = _extract_objet_detailed(clean_text, page_confidence)
+    fields["objet"] = objet_value
+    field_details["objet"] = {"selected": objet_value, "candidates": objet_candidates}
+
+    pj_value, pj_candidates = _extract_pj_detailed(clean_text, page_confidence)
+    fields["pj"] = pj_value
+    field_details["pj"] = {"selected": pj_value, "candidates": pj_candidates}
+
+    body_value, body_candidates = _extract_body_detailed(clean_text, page_confidence)
+    fields["body"] = body_value
+    field_details["body"] = {"selected": body_value, "candidates": body_candidates}
+
     return {
-        "sender":     _extract_sender(clean_text) or seq_sender,
-        "ref_header": _extract_ref_header(clean_text),
-        "ref_body":   _extract_ref_body(clean_text),
-        "date":       _extract_date(clean_text),
-        "receiver":   _extract_receiver(clean_text) or seq_receiver,
-        "objet":      _extract_objet(clean_text),
-        "pj":         _extract_pj(clean_text),
-        "body":       _extract_body(clean_text),
+        "fields": fields,
+        "field_details": field_details,
+        "page_confidence": _normalize_confidence(page_confidence),
     }
+
+
+def extract_fields(raw_text: str, page_confidence: float = 0.0) -> dict:
+    return extract_fields_detailed(raw_text, page_confidence=page_confidence)["fields"]

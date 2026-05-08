@@ -1,0 +1,9 @@
+﻿Field,Regex,Heuristic,RapidFuzzy,Best
+Source,1.0,1.0,1.0,Regex
+Destination,,1.0,0.0,Heuristic
+Date,1.0,1.0,,Regex
+Ref,1.0,1.0,1.0,Regex
+Objet,0.0,,0.0,Regex
+Pj,,0.0,0.0,Heuristic
+Content,1.0,1.0,0.9133858267716535,Regex
+Overall,0.8,0.8333333333333334,0.48556430446194226,Heuristic

@@ -1,0 +1,18 @@
+﻿Document,Field,Strategy,Value,Strategy Score,Page Confidence,Ensemble Score,Reason,Precision,Recall,F1,Exact Match,Field Accuracy,IoU
+doc_001_tmpl1_SRI-2024-001_scan_bureau.pdf,Source,Regex,Service Relations Institutionnelles,0.96,0.972,0.9824,explicit sender label,1.0,1.0,1.0,1.0,1.0,1.0
+doc_001_tmpl1_SRI-2024-001_scan_bureau.pdf,Source,Heuristic,Service Relations Institutionnelles,0.88,0.972,0.9184,header window and cleanup rules,1.0,1.0,1.0,1.0,1.0,1.0
+doc_001_tmpl1_SRI-2024-001_scan_bureau.pdf,Source,RapidFuzzy,Service Relations Institutionnelles,0.82,0.972,0.8704,fuzzy label match,1.0,1.0,1.0,1.0,1.0,1.0
+doc_001_tmpl1_SRI-2024-001_scan_bureau.pdf,Destination,Heuristic,Département Finances & Comptabilité,0.87,0.972,0.9104,contextual header scan,1.0,1.0,1.0,1.0,1.0,1.0
+doc_001_tmpl1_SRI-2024-001_scan_bureau.pdf,Destination,RapidFuzzy,Service Relations Institutionnelles,0.8,0.972,0.8544,fuzzy label match,0.0,0.0,0.0,0.0,0.0,0.0
+doc_001_tmpl1_SRI-2024-001_scan_bureau.pdf,Date,Regex,22/05/2024,0.93,0.972,0.9384,explicit date pattern,1.0,1.0,1.0,1.0,1.0,1.0
+doc_001_tmpl1_SRI-2024-001_scan_bureau.pdf,Date,Heuristic,22/05/2024,0.84,0.972,0.8664,alger/date window heuristics,1.0,1.0,1.0,1.0,1.0,1.0
+doc_001_tmpl1_SRI-2024-001_scan_bureau.pdf,Ref,Regex,SRI/2024/001,0.97,0.972,0.9704,explicit reference pattern,1.0,1.0,1.0,1.0,1.0,1.0
+doc_001_tmpl1_SRI-2024-001_scan_bureau.pdf,Ref,Heuristic,SRI/2024/001,0.9,0.972,0.9144,reference window scan,1.0,1.0,1.0,1.0,1.0,1.0
+doc_001_tmpl1_SRI-2024-001_scan_bureau.pdf,Ref,RapidFuzzy,SRI/2024/001,0.78,0.972,0.8184,fuzzy label match,1.0,1.0,1.0,1.0,1.0,1.0
+doc_001_tmpl1_SRI-2024-001_scan_bureau.pdf,Objet,Regex,</b>,0.95,0.972,0.9544,explicit objet label,0.0,0.0,0.0,0.0,0.0,0.0
+doc_001_tmpl1_SRI-2024-001_scan_bureau.pdf,Objet,RapidFuzzy,</b>,0.83,0.972,0.8584,fuzzy label match,0.0,0.0,0.0,0.0,0.0,0.0
+doc_001_tmpl1_SRI-2024-001_scan_bureau.pdf,Pj,Heuristic,01 pièce jointe,0.88,0.972,0.8984,attachment count and spillover heuristics,0.0,0.0,0.0,0.0,0.0,0.0
+doc_001_tmpl1_SRI-2024-001_scan_bureau.pdf,Pj,RapidFuzzy,"Quartier des affaires, Bab Ezzouar Tél: 023 92 32 00",0.75,0.972,0.7944,fuzzy label match,0.0,0.0,0.0,0.0,0.0,0.0
+doc_001_tmpl1_SRI-2024-001_scan_bureau.pdf,Content,Regex,"Dans le cadre de la planification financière pour le second semestre, nous vous transmettons les conventions de partenar",0.92,0.972,0.9604,body start/end regex,1.0,1.0,1.0,1.0,1.0,1.0
+doc_001_tmpl1_SRI-2024-001_scan_bureau.pdf,Content,Heuristic,"Dans le cadre de la planification financière pour le second semestre, nous vous transmettons les conventions de partenar",0.86,0.972,0.9124,body window heuristics,1.0,1.0,1.0,1.0,1.0,1.0
+doc_001_tmpl1_SRI-2024-001_scan_bureau.pdf,Content,RapidFuzzy,nous vous transmettons les conventions de partenariat actualisées nécessitant un arbitrage budgétaire. Ces documents dét,0.7,0.972,0.7844,fuzzy greeting/body cue,1.0,0.8405797101449275,0.9133858267716535,0.0,1.0,0.8867924528301887
