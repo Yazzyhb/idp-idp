@@ -439,29 +439,101 @@ KIE_FIELDS = {
 # Main evaluation
 # ---------------------------------------------------------------------------
 
-def evaluate(max_docs: int | None = None):
+def _read_existing_rows(csv_path: Path) -> list[dict]:
+    if not csv_path.exists():
+        return []
+    with open(csv_path, encoding="utf-8-sig", newline="") as f:
+        return list(csv.DictReader(f))
+
+
+def evaluate(max_docs: int | None = None, batch_size: int | None = None, resume: bool = False):
     print("Loading pipeline…")
     ocr_mod, kie_mod = _load_pipeline()
     gt_data = _load_gt()
     _ensure_report_dirs()
 
+    ocr_csv = ROOT / "full_ocr_eval.csv"
+    kie_csv = ROOT / "full_kie_eval.csv"
+    approach_csv = ROOT / "full_kie_approaches.csv"
+
     pdf_files = sorted(DOCS_DIR.glob("*.pdf"))
     if max_docs:
         pdf_files = pdf_files[:max_docs]
 
+    existing_ocr_rows = _read_existing_rows(ocr_csv) if resume else []
+    existing_kie_rows = _read_existing_rows(kie_csv) if resume else []
+    existing_approach_rows = _read_existing_rows(approach_csv) if resume else []
+
+    processed_docs = {row.get("Document", "") for row in existing_ocr_rows} if resume else set()
+    if processed_docs:
+        pdf_files = [pdf for pdf in pdf_files if pdf.name not in processed_docs]
+
     total = len(pdf_files)
     print(f"Found {total} document(s) to evaluate.\n")
+    if resume and processed_docs:
+        print(f"Resume mode: skipping {len(processed_docs)} already processed document(s).")
+    if resume and total == 0:
+        print("No new documents left to process; existing CSVs were kept unchanged.")
+        return
+
+    # normalize batch size
+    if batch_size is None or batch_size <= 0:
+        batch_size = total if total > 0 else 1
 
     # ── accumulators ────────────────────────────────────────────────────────
-    ocr_rows = []
-    kie_rows = []
-    approach_rows = []
+    ocr_rows = list(existing_ocr_rows)
+    kie_rows = list(existing_kie_rows)
+    approach_rows = list(existing_approach_rows)
 
     ocr_acc = defaultdict(list)
     kie_acc = defaultdict(lambda: defaultdict(list))
     approach_acc = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
     approach_overall = defaultdict(lambda: defaultdict(list))
     kie_time_all = []
+
+    def _seed_accumulators_from_rows() -> None:
+        for row in ocr_rows:
+            for metric in ["CER", "WER", "Edit Distance", "OCR Accuracy", "OCR Time_s"]:
+                value = row.get(metric, "")
+                try:
+                    value = float(value)
+                except Exception:
+                    continue
+                if value == value:
+                    ocr_acc[metric].append(value)
+
+        for row in kie_rows:
+            field = row.get("Field", "")
+            if not field:
+                continue
+            for metric in ["Precision", "Recall", "F1", "Exact Match", "Field Accuracy", "IoU", "KIE Time_s"]:
+                value = row.get(metric, "")
+                try:
+                    value = float(value)
+                except Exception:
+                    continue
+                if value == value:
+                    kie_acc[field][metric].append(value)
+                    if metric == "KIE Time_s":
+                        kie_time_all.append(value)
+
+        for row in approach_rows:
+            field = row.get("Field", "")
+            strategy = row.get("Strategy", "")
+            if not field or not strategy:
+                continue
+            for metric in ["Precision", "Recall", "F1", "Exact Match", "Field Accuracy", "IoU"]:
+                value = row.get(metric, "")
+                try:
+                    value = float(value)
+                except Exception:
+                    continue
+                if value == value:
+                    approach_acc[field][strategy][metric].append(value)
+                    approach_overall[strategy][metric].append(value)
+
+    if resume:
+        _seed_accumulators_from_rows()
 
     strategy_labels = {
         "regex": "Regex",
@@ -504,127 +576,152 @@ def evaluate(max_docs: int | None = None):
         rows.append(overall_row)
         return pd.DataFrame(rows)
 
-    # ── per-document loop ───────────────────────────────────────────────────
-    for idx, pdf_path in enumerate(pdf_files, 1):
-        doc_name = pdf_path.name
-        m        = re.search(r"doc_(\d+)", doc_name)
-        doc_num  = m.group(1) if m else "???"
-        gt_row   = gt_data.get(doc_num, {})
-        gt_full  = _gt_full_text(gt_row) if gt_row else ""
+    # helper: write interim CSVs so work is saved between batches
+    def _save_interim_csvs():
+        with open(ocr_csv, "w", newline="", encoding="utf-8-sig") as f:
+            if ocr_rows:
+                w = csv.DictWriter(f, fieldnames=ocr_rows[0].keys())
+                w.writeheader(); w.writerows(ocr_rows)
 
-        print(f"[{idx:3d}/{total}] {doc_name}", end=" … ", flush=True)
+        with open(kie_csv, "w", newline="", encoding="utf-8-sig") as f:
+            if kie_rows:
+                w = csv.DictWriter(f, fieldnames=kie_rows[0].keys())
+                w.writeheader(); w.writerows(kie_rows)
 
-        # ── OCR ─────────────────────────────────────────────────────────────
-        try:
-            ocr_text, ocr_conf, ocr_time = _page1_ocr(ocr_mod, pdf_path)
-        except Exception as exc:
-            print(f"OCR ERROR: {exc}")
-            continue
+        with open(approach_csv, "w", newline="", encoding="utf-8-sig") as f:
+            if approach_rows:
+                w = csv.DictWriter(f, fieldnames=approach_rows[0].keys())
+                w.writeheader(); w.writerows(approach_rows)
 
-        if gt_full:
-            doc_cer  = calc_cer(ocr_text, gt_full)
-            doc_wer  = calc_wer(ocr_text, gt_full)
-            doc_lev  = calc_levenshtein(ocr_text, gt_full)
-            doc_tacc = calc_text_accuracy(ocr_text, gt_full)
-        else:
-            doc_cer = doc_wer = doc_lev = doc_tacc = float("nan")
+    # ── per-document loop (batched) ───────────────────────────────────────
+    for batch_start in range(0, total, batch_size):
+        batch_files = pdf_files[batch_start: batch_start + batch_size]
+        batch_no = batch_start // batch_size + 1
+        print(f"Starting batch {batch_no} — documents {batch_start+1}-{batch_start+len(batch_files)}")
 
-        ocr_row = {
-            "Document": doc_name,
-            "CER": doc_cer,
-            "WER": doc_wer,
-            "Edit Distance": doc_lev,
-            "OCR Accuracy": doc_tacc,
-            "OCR Time_s": round(ocr_time, 3),
-        }
-        ocr_rows.append(ocr_row)
+        for idx, pdf_path in enumerate(batch_files, batch_start + 1):
+            doc_name = pdf_path.name
+            m        = re.search(r"doc_(\d+)", doc_name)
+            doc_num  = m.group(1) if m else "???"
+            gt_row   = gt_data.get(doc_num, {})
+            gt_full  = _gt_full_text(gt_row) if gt_row else ""
 
-        if gt_full:
-            ocr_acc["CER"].append(doc_cer)
-            ocr_acc["WER"].append(doc_wer)
-            ocr_acc["Edit Distance"].append(doc_lev)
-            ocr_acc["OCR Accuracy"].append(doc_tacc)
-        ocr_acc["OCR Time_s"].append(ocr_time)
+            print(f"[{idx:3d}/{total}] {doc_name}", end=" … ", flush=True)
 
-        # ── KIE ─────────────────────────────────────────────────────────────
-        try:
-            fields, field_rows, approach_candidates, kie_time = _extract_kie_page1(kie_mod, ocr_text, ocr_conf)
-        except Exception as exc:
-            print(f"KIE ERROR: {exc}")
-            fields, field_rows, approach_candidates, kie_time = {}, {}, [], float("nan")
+            # ── OCR ─────────────────────────────────────────────────────────────
+            try:
+                ocr_text, ocr_conf, ocr_time = _page1_ocr(ocr_mod, pdf_path)
+            except Exception as exc:
+                print(f"OCR ERROR: {exc}")
+                continue
 
-        for kie_field, gt_col in KIE_FIELDS.items():
-            pred = fields.get(kie_field) or ""
-            gold = gt_row.get(gt_col, "") or ""
+            if gt_full:
+                doc_cer  = calc_cer(ocr_text, gt_full)
+                doc_wer  = calc_wer(ocr_text, gt_full)
+                doc_lev  = calc_levenshtein(ocr_text, gt_full)
+                doc_tacc = calc_text_accuracy(ocr_text, gt_full)
+            else:
+                doc_cer = doc_wer = doc_lev = doc_tacc = float("nan")
 
-            metrics = _field_metric_pack(pred, gold, kie_field)
-            field_meta = field_rows.get(kie_field, {})
-            field_time = field_meta.get("field_time_s", float("nan"))
-
-            kie_row = {
+            ocr_row = {
                 "Document": doc_name,
-                "Field": gt_col,
-                "Predicted": pred[:120],
-                "Ground Truth": gold[:120],
-                "Selected Strategy": field_meta.get("selected_strategy", "n/a"),
-                "Selected Score": field_meta.get("selected_score", float("nan")),
-                "KIE Time_s": round(field_time, 4) if field_time == field_time else float("nan"),
-                "Exact Match": metrics["Exact_Match"],
-                "Precision": metrics["Precision"],
-                "Recall": metrics["Recall"],
-                "F1": metrics["F1"],
-                "Field Accuracy": metrics["Field_Accuracy"],
-                "IoU": metrics["IoU"],
+                "CER": doc_cer,
+                "WER": doc_wer,
+                "Edit Distance": doc_lev,
+                "OCR Accuracy": doc_tacc,
+                "OCR Time_s": round(ocr_time, 3),
             }
-            kie_rows.append(kie_row)
+            ocr_rows.append(ocr_row)
 
-            if gold:
-                for metric_name, metric_value in metrics.items():
-                    kie_acc[gt_col][metric_labels.get(metric_name, metric_name)].append(metric_value)
-                if field_time == field_time:
-                    kie_acc[gt_col]["KIE Time_s"].append(field_time)
-                    kie_time_all.append(field_time)
+            if gt_full:
+                ocr_acc["CER"].append(doc_cer)
+                ocr_acc["WER"].append(doc_wer)
+                ocr_acc["Edit Distance"].append(doc_lev)
+                ocr_acc["OCR Accuracy"].append(doc_tacc)
+            ocr_acc["OCR Time_s"].append(ocr_time)
 
-        for cand in approach_candidates:
-            gt_col = cand["field_label"]
-            gold = gt_row.get(gt_col, "") or ""
-            metrics = _field_metric_pack(cand["value"] or "", gold, cand["field"])
+            # ── KIE ─────────────────────────────────────────────────────────────
+            try:
+                fields, field_rows, approach_candidates, kie_time = _extract_kie_page1(kie_mod, ocr_text, ocr_conf)
+            except Exception as exc:
+                print(f"KIE ERROR: {exc}")
+                fields, field_rows, approach_candidates, kie_time = {}, {}, [], float("nan")
 
-            approach_row = {
-                "Document": doc_name,
-                "Field": gt_col,
-                "Strategy": strategy_labels.get(cand["strategy"], cand["strategy"]),
-                "Value": (cand["value"] or "")[:120],
-                "Strategy Score": cand["strategy_score"],
-                "Page Confidence": cand["page_confidence"],
-                "Ensemble Score": cand["ensemble_score"],
-                "Reason": cand["reason"],
-                "Precision": metrics["Precision"],
-                "Recall": metrics["Recall"],
-                "F1": metrics["F1"],
-                "Exact Match": metrics["Exact_Match"],
-                "Field Accuracy": metrics["Field_Accuracy"],
-                "IoU": metrics["IoU"],
-            }
-            approach_rows.append(approach_row)
+            for kie_field, gt_col in KIE_FIELDS.items():
+                pred = fields.get(kie_field) or ""
+                gold = gt_row.get(gt_col, "") or ""
 
-            if gold:
-                for metric_name, metric_value in metrics.items():
-                    label = metric_labels.get(metric_name, metric_name)
-                    approach_acc[gt_col][cand["strategy"]][label].append(metric_value)
-                    approach_overall[cand["strategy"]][label].append(metric_value)
+                metrics = _field_metric_pack(pred, gold, kie_field)
+                field_meta = field_rows.get(kie_field, {})
+                field_time = field_meta.get("field_time_s", float("nan"))
 
-        # ── per-doc console line ─────────────────────────────────────────────
-        cer_s  = f"CER={doc_cer:.3f}" if doc_cer == doc_cer else "CER=n/a"
-        wer_s  = f"WER={doc_wer:.3f}" if doc_wer == doc_wer else "WER=n/a"
-        tacc_s = f"Acc={doc_tacc:.1%}" if doc_tacc == doc_tacc else "Acc=n/a"
-        avg_f1 = _safe_mean([
-            _safe_mean(kie_acc[KIE_FIELDS[f]]["F1"]) for f in KIE_FIELDS
-            if kie_acc[KIE_FIELDS[f]]["F1"]
-        ])
-        f1_s = f"KIE-F1={avg_f1:.3f}" if avg_f1 == avg_f1 else "KIE-F1=n/a"
-        print(f"{cer_s}  {wer_s}  {tacc_s}  {f1_s}  OCR={ocr_time:.1f}s  KIE={kie_time:.2f}s")
+                kie_row = {
+                    "Document": doc_name,
+                    "Field": gt_col,
+                    "Predicted": pred[:120],
+                    "Ground Truth": gold[:120],
+                    "Selected Strategy": field_meta.get("selected_strategy", "n/a"),
+                    "Selected Score": field_meta.get("selected_score", float("nan")),
+                    "KIE Time_s": round(field_time, 4) if field_time == field_time else float("nan"),
+                    "Exact Match": metrics["Exact_Match"],
+                    "Precision": metrics["Precision"],
+                    "Recall": metrics["Recall"],
+                    "F1": metrics["F1"],
+                    "Field Accuracy": metrics["Field_Accuracy"],
+                    "IoU": metrics["IoU"],
+                }
+                kie_rows.append(kie_row)
 
+                if gold:
+                    for metric_name, metric_value in metrics.items():
+                        kie_acc[gt_col][metric_labels.get(metric_name, metric_name)].append(metric_value)
+                    if field_time == field_time:
+                        kie_acc[gt_col]["KIE Time_s"].append(field_time)
+                        kie_time_all.append(field_time)
+
+            for cand in approach_candidates:
+                gt_col = cand["field_label"]
+                gold = gt_row.get(gt_col, "") or ""
+                metrics = _field_metric_pack(cand["value"] or "", gold, cand["field"])
+
+                approach_row = {
+                    "Document": doc_name,
+                    "Field": gt_col,
+                    "Strategy": strategy_labels.get(cand["strategy"], cand["strategy"]),
+                    "Value": (cand["value"] or "")[:120],
+                    "Strategy Score": cand["strategy_score"],
+                    "Page Confidence": cand["page_confidence"],
+                    "Ensemble Score": cand["ensemble_score"],
+                    "Reason": cand["reason"],
+                    "Precision": metrics["Precision"],
+                    "Recall": metrics["Recall"],
+                    "F1": metrics["F1"],
+                    "Exact Match": metrics["Exact_Match"],
+                    "Field Accuracy": metrics["Field_Accuracy"],
+                    "IoU": metrics["IoU"],
+                }
+                approach_rows.append(approach_row)
+
+                if gold:
+                    for metric_name, metric_value in metrics.items():
+                        label = metric_labels.get(metric_name, metric_name)
+                        approach_acc[gt_col][cand["strategy"]][label].append(metric_value)
+                        approach_overall[cand["strategy"]][label].append(metric_value)
+
+            # ── per-doc console line ─────────────────────────────────────────────
+            cer_s  = f"CER={doc_cer:.3f}" if doc_cer == doc_cer else "CER=n/a"
+            wer_s  = f"WER={doc_wer:.3f}" if doc_wer == doc_wer else "WER=n/a"
+            tacc_s = f"Acc={doc_tacc:.1%}" if doc_tacc == doc_tacc else "Acc=n/a"
+            avg_f1 = _safe_mean([
+                _safe_mean(kie_acc[KIE_FIELDS[f]]["F1"]) for f in KIE_FIELDS
+                if kie_acc[KIE_FIELDS[f]]["F1"]
+            ])
+            f1_s = f"KIE-F1={avg_f1:.3f}" if avg_f1 == avg_f1 else "KIE-F1=n/a"
+            print(f"{cer_s}  {wer_s}  {tacc_s}  {f1_s}  OCR={ocr_time:.1f}s  KIE={kie_time:.2f}s")
+            
+        # after finishing the current batch, write interim CSVs
+        _save_interim_csvs()
+    
     # ── save CSVs ────────────────────────────────────────────────────────────
     ocr_csv = ROOT / "full_ocr_eval.csv"
     kie_csv = ROOT / "full_kie_eval.csv"
@@ -777,5 +874,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Full IDP Evaluator (OCR + KIE)")
     parser.add_argument("--docs", type=int, default=None,
                         help="Limit number of documents (default: all)")
+    parser.add_argument("--batch-size", type=int, default=None,
+                        help="Process documents in batches of this size (default: all)")
+    parser.add_argument("--resume", action="store_true",
+                        help="Skip documents already present in full_ocr_eval.csv")
     args = parser.parse_args()
-    evaluate(max_docs=args.docs)
+    evaluate(max_docs=args.docs, batch_size=args.batch_size, resume=args.resume)
