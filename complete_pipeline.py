@@ -29,6 +29,7 @@ import sys
 import time
 import tempfile
 from collections import Counter, defaultdict
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Optional, Union
 
@@ -1237,6 +1238,8 @@ def evaluate(max_docs: int | None = None):
 
     ocr_acc = defaultdict(list)
     kie_acc = defaultdict(lambda: defaultdict(list))
+    # per-approach aggregation: approach -> field -> metric -> list
+    approach_acc = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
 
     for idx, pdf_path in enumerate(pdf_files, 1):
         doc_name = pdf_path.name
@@ -1295,6 +1298,11 @@ def evaluate(max_docs: int | None = None):
 
         fields = kie_out["pages"][0]["fields"] if kie_out.get("pages") else {}
 
+        # If available, detailed candidate info for each field
+        field_details = None
+        if kie_out.get("pages") and kie_out["pages"][0].get("field_details"):
+            field_details = kie_out["pages"][0]["field_details"]
+
         for kie_field, gt_col in KIE_FIELDS.items():
             pred = fields.get(kie_field) or ""
             gold = gt_row.get(gt_col, "") or ""
@@ -1303,11 +1311,21 @@ def evaluate(max_docs: int | None = None):
             prec, rec, f1 = calc_token_prf(pred, gold)
             facc = calc_field_accuracy(pred, gold)
             iou = calc_iou_text(pred, gold)
+            kie_cer = calc_cer(pred, gold)
 
+            def _text_sim(a, b):
+                a = (a or "").strip().lower(); b = (b or "").strip().lower()
+                if not a or not b: return 0.0
+                return SequenceMatcher(None, a, b).ratio()
+
+            fuzzy_score = _text_sim(pred, gold)
+
+            # Record ensemble (selected) prediction
             kie_row = {
                 "doc": doc_name,
                 "doc_num": doc_num,
                 "field": kie_field,
+                "approach": "ensemble",
                 "predicted": pred[:120],
                 "ground_truth": gold[:120],
                 "kie_time_s": round(kie_time, 3),
@@ -1317,6 +1335,8 @@ def evaluate(max_docs: int | None = None):
                 "F1": _fmt(f1),
                 "Field_Accuracy": _fmt(facc),
                 "IoU": _fmt(iou),
+                "FuzzyScore": _fmt(fuzzy_score),
+                "KIE_CER": _fmt(kie_cer),
             }
             kie_rows.append(kie_row)
 
@@ -1327,6 +1347,59 @@ def evaluate(max_docs: int | None = None):
                 kie_acc[kie_field]["F1"].append(f1)
                 kie_acc[kie_field]["Field_Accuracy"].append(facc)
                 kie_acc[kie_field]["IoU"].append(iou)
+                # per-approach (ensemble)
+                approach_acc["ensemble"][kie_field]["Exact_Match"].append(em)
+                approach_acc["ensemble"][kie_field]["Precision"].append(prec)
+                approach_acc["ensemble"][kie_field]["Recall"].append(rec)
+                approach_acc["ensemble"][kie_field]["F1"].append(f1)
+                approach_acc["ensemble"][kie_field]["Field_Accuracy"].append(facc)
+                approach_acc["ensemble"][kie_field]["IoU"].append(iou)
+
+            # Also evaluate individual candidate strategies (regex, heuristic, fuzzy, ...)
+            if field_details and field_details.get(kie_field):
+                candidates = field_details[kie_field].get("candidates", [])
+                for cand in candidates:
+                    cval = cand.get("value") or ""
+                    strategy = cand.get("strategy") or "unknown"
+                    em_c = calc_exact_match(cval, gold, kie_field)
+                    prec_c, rec_c, f1_c = calc_token_prf(cval, gold)
+                    facc_c = calc_field_accuracy(cval, gold)
+                    iou_c = calc_iou_text(cval, gold)
+                    kie_cer_c = calc_cer(cval, gold)
+                    fuzzy_c = cand.get("strategy_score") if cand.get("strategy_score") is not None else _text_sim(cval, gold)
+                    cand_row = {
+                        "doc": doc_name,
+                        "doc_num": doc_num,
+                        "field": kie_field,
+                        "approach": strategy,
+                        "approach_score": cand.get("score"),
+                        "predicted": (cval or "")[:120],
+                        "ground_truth": gold[:120],
+                        "kie_time_s": round(kie_time, 3),
+                        "Exact_Match": _fmt(em_c),
+                        "Precision": _fmt(prec_c),
+                        "Recall": _fmt(rec_c),
+                        "F1": _fmt(f1_c),
+                        "Field_Accuracy": _fmt(facc_c),
+                        "IoU": _fmt(iou_c),
+                        "FuzzyScore": _fmt(fuzzy_c),
+                        "KIE_CER": _fmt(kie_cer_c),
+                    }
+                    kie_rows.append(cand_row)
+                    if gold:
+                        kie_acc[kie_field]["Exact_Match"].append(em_c)
+                        kie_acc[kie_field]["Precision"].append(prec_c)
+                        kie_acc[kie_field]["Recall"].append(rec_c)
+                        kie_acc[kie_field]["F1"].append(f1_c)
+                        kie_acc[kie_field]["Field_Accuracy"].append(facc_c)
+                        kie_acc[kie_field]["IoU"].append(iou_c)
+                        # per-approach aggregation
+                        approach_acc[strategy][kie_field]["Exact_Match"].append(em_c)
+                        approach_acc[strategy][kie_field]["Precision"].append(prec_c)
+                        approach_acc[strategy][kie_field]["Recall"].append(rec_c)
+                        approach_acc[strategy][kie_field]["F1"].append(f1_c)
+                        approach_acc[strategy][kie_field]["Field_Accuracy"].append(facc_c)
+                        approach_acc[strategy][kie_field]["IoU"].append(iou_c)
 
         cer_s = f"CER={doc_cer:.3f}" if doc_cer == doc_cer else "CER=n/a"
         wer_s = f"WER={doc_wer:.3f}" if doc_wer == doc_wer else "WER=n/a"
@@ -1406,6 +1479,39 @@ def evaluate(max_docs: int | None = None):
         f"{_fmt(_safe_mean(macro['Acc'])):>9} "
         f"{_fmt(_safe_mean(macro['IoU'])):>8}"
     )
+    # Per-approach summary (mean over fields)
+    if approach_acc:
+        print(f"\n{sep}")
+        print("  KIE EVALUATION BY APPROACH  (mean over fields)")
+        print(sep)
+        header2 = f"  {'Approach':<12} {'Fields':>6} {'ExactMatch':>11} {'Precision':>10} {'Recall':>8} {'F1':>8} {'FieldAcc':>9} {'IoU':>8}"
+        print(header2)
+        print("  " + "-" * 76)
+        for approach in sorted(approach_acc.keys()):
+            mac = defaultdict(list)
+            n_fields = 0
+            for field in KIE_FIELDS:
+                fa = approach_acc[approach].get(field, {})
+                if not fa:
+                    continue
+                f1 = _safe_mean(fa.get("F1", []))
+                if f1 != f1:
+                    continue
+                n_fields += 1
+                em = _safe_mean(fa.get("Exact_Match", []))
+                pr = _safe_mean(fa.get("Precision", []))
+                rc = _safe_mean(fa.get("Recall", []))
+                ac = _safe_mean(fa.get("Field_Accuracy", []))
+                iu = _safe_mean(fa.get("IoU", []))
+                for k, v in [("EM", em), ("P", pr), ("R", rc), ("F1", f1), ("Acc", ac), ("IoU", iu)]:
+                    if v == v:
+                        mac[k].append(v)
+            print(
+                f"  {approach:<12} {n_fields:>6} "
+                f"{_fmt(_safe_mean(mac['EM'])):>11} {_fmt(_safe_mean(mac['P'])):>10} {_fmt(_safe_mean(mac['R'])):>8} "
+                f"{_fmt(_safe_mean(mac['F1'])):>8} {_fmt(_safe_mean(mac['Acc'])):>9} {_fmt(_safe_mean(mac['IoU'])):>8}"
+            )
+        print("  " + "-" * 76)
     kie_time_all = [r['kie_time_s'] for r in kie_rows if r['field'] == 'body']
     if kie_time_all:
         print(f"\n  Mean KIE time/doc : {sum(kie_time_all)/len(kie_time_all):.3f}s")

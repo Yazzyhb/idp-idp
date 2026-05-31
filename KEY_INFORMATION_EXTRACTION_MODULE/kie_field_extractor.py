@@ -867,9 +867,9 @@ def _extract_body_fuzzy(raw_text: str) -> Optional[str]:
 
 def _extract_sender_detailed(raw_text: str, page_confidence: float) -> tuple[Optional[str], list[dict]]:
     candidates = [
-        _make_candidate("sender", "regex", _extract_sender_regex(raw_text), 0.96, page_confidence, "explicit sender label"),
-        _make_candidate("sender", "heuristic", _extract_sender(raw_text), 0.88, page_confidence, "header window and cleanup rules"),
-        _make_candidate("sender", "rapid_fuzzy", _extract_sender_fuzzy(raw_text), 0.82, page_confidence, "fuzzy label match"),
+        _make_candidate("sender", "regex", _extract_sender_regex(raw_text), 0.85, page_confidence, "explicit sender label"),
+        _make_candidate("sender", "heuristic", _extract_sender(raw_text), 0.78, page_confidence, "header window and cleanup rules"),
+        _make_candidate("sender", "rapid_fuzzy", _extract_sender_fuzzy(raw_text), 0.72, page_confidence, "fuzzy label match"),
     ]
     best = _pick_best_candidate(candidates)
     return (best["value"] if best else None, [candidate for candidate in candidates if candidate])
@@ -877,9 +877,9 @@ def _extract_sender_detailed(raw_text: str, page_confidence: float) -> tuple[Opt
 
 def _extract_receiver_detailed(raw_text: str, page_confidence: float) -> tuple[Optional[str], list[dict]]:
     candidates = [
-        _make_candidate("receiver", "regex", _extract_receiver_regex(raw_text), 0.95, page_confidence, "explicit receiver label"),
-        _make_candidate("receiver", "heuristic", _extract_receiver(raw_text), 0.87, page_confidence, "contextual header scan"),
-        _make_candidate("receiver", "rapid_fuzzy", _extract_receiver_fuzzy(raw_text), 0.80, page_confidence, "fuzzy label match"),
+        _make_candidate("receiver", "regex", _extract_receiver_regex(raw_text), 0.84, page_confidence, "explicit receiver label"),
+        _make_candidate("receiver", "heuristic", _extract_receiver(raw_text), 0.77, page_confidence, "contextual header scan"),
+        _make_candidate("receiver", "rapid_fuzzy", _extract_receiver_fuzzy(raw_text), 0.70, page_confidence, "fuzzy label match"),
     ]
     best = _pick_best_candidate(candidates)
     return (best["value"] if best else None, [candidate for candidate in candidates if candidate])
@@ -887,9 +887,9 @@ def _extract_receiver_detailed(raw_text: str, page_confidence: float) -> tuple[O
 
 def _extract_date_detailed(raw_text: str, page_confidence: float) -> tuple[Optional[str], list[dict]]:
     candidates = [
-        _make_candidate("date", "regex", _extract_date_regex(raw_text), 0.93, page_confidence, "explicit date pattern"),
-        _make_candidate("date", "heuristic", _extract_date(raw_text), 0.84, page_confidence, "alger/date window heuristics"),
-        _make_candidate("date", "rapid_fuzzy", _extract_date_fuzzy(raw_text), 0.72, page_confidence, "fuzzy date label match"),
+        _make_candidate("date", "regex", _extract_date_regex(raw_text), 0.82, page_confidence, "explicit date pattern"),
+        _make_candidate("date", "heuristic", _extract_date(raw_text), 0.74, page_confidence, "alger/date window heuristics"),
+        _make_candidate("date", "rapid_fuzzy", _extract_date_fuzzy(raw_text), 0.62, page_confidence, "fuzzy date label match"),
     ]
     best = _pick_best_candidate(candidates)
     return (best["value"] if best else None, [candidate for candidate in candidates if candidate])
@@ -897,9 +897,9 @@ def _extract_date_detailed(raw_text: str, page_confidence: float) -> tuple[Optio
 
 def _extract_ref_header_detailed(raw_text: str, page_confidence: float) -> tuple[Optional[str], list[dict]]:
     candidates = [
-        _make_candidate("ref_header", "regex", _extract_ref_header_regex(raw_text), 0.97, page_confidence, "explicit reference pattern"),
-        _make_candidate("ref_header", "heuristic", _extract_ref_header(raw_text), 0.90, page_confidence, "reference window scan"),
-        _make_candidate("ref_header", "rapid_fuzzy", _extract_ref_header_fuzzy(raw_text), 0.78, page_confidence, "fuzzy label match"),
+        _make_candidate("ref_header", "regex", _extract_ref_header_regex(raw_text), 0.86, page_confidence, "explicit reference pattern"),
+        _make_candidate("ref_header", "heuristic", _extract_ref_header(raw_text), 0.80, page_confidence, "reference window scan"),
+        _make_candidate("ref_header", "rapid_fuzzy", _extract_ref_header_fuzzy(raw_text), 0.68, page_confidence, "fuzzy label match"),
     ]
     best = _pick_best_candidate(candidates)
     return (best["value"] if best else None, [candidate for candidate in candidates if candidate])
@@ -907,9 +907,9 @@ def _extract_ref_header_detailed(raw_text: str, page_confidence: float) -> tuple
 
 def _extract_objet_detailed(raw_text: str, page_confidence: float) -> tuple[Optional[str], list[dict]]:
     candidates = [
-        _make_candidate("objet", "regex", _extract_objet_regex(raw_text), 0.95, page_confidence, "explicit objet label"),
-        _make_candidate("objet", "heuristic", _extract_objet(raw_text), 0.89, page_confidence, "multi-candidate subject heuristics"),
-        _make_candidate("objet", "rapid_fuzzy", _extract_objet_fuzzy(raw_text), 0.83, page_confidence, "fuzzy label match"),
+        _make_candidate("objet", "regex", _extract_objet_regex(raw_text), 0.84, page_confidence, "explicit objet label"),
+        _make_candidate("objet", "heuristic", _extract_objet(raw_text), 0.79, page_confidence, "multi-candidate subject heuristics"),
+        _make_candidate("objet", "rapid_fuzzy", _extract_objet_fuzzy(raw_text), 0.73, page_confidence, "fuzzy label match"),
     ]
     best = _pick_best_candidate(candidates)
     return (best["value"] if best else None, [candidate for candidate in candidates if candidate])
@@ -917,9 +917,9 @@ def _extract_objet_detailed(raw_text: str, page_confidence: float) -> tuple[Opti
 
 def _extract_pj_detailed(raw_text: str, page_confidence: float) -> tuple[Optional[str], list[dict]]:
     candidates = [
-        _make_candidate("pj", "regex", _extract_pj_regex(raw_text), 0.94, page_confidence, "explicit PJ label"),
-        _make_candidate("pj", "heuristic", _extract_pj(raw_text), 0.88, page_confidence, "attachment count and spillover heuristics"),
-        _make_candidate("pj", "rapid_fuzzy", _extract_pj_fuzzy(raw_text), 0.75, page_confidence, "fuzzy label match"),
+        _make_candidate("pj", "regex", _extract_pj_regex(raw_text), 0.83, page_confidence, "explicit PJ label"),
+        _make_candidate("pj", "heuristic", _extract_pj(raw_text), 0.78, page_confidence, "attachment count and spillover heuristics"),
+        _make_candidate("pj", "rapid_fuzzy", _extract_pj_fuzzy(raw_text), 0.65, page_confidence, "fuzzy label match"),
     ]
     best = _pick_best_candidate(candidates)
     return (best["value"] if best else None, [candidate for candidate in candidates if candidate])
@@ -927,9 +927,9 @@ def _extract_pj_detailed(raw_text: str, page_confidence: float) -> tuple[Optiona
 
 def _extract_body_detailed(raw_text: str, page_confidence: float) -> tuple[Optional[str], list[dict]]:
     candidates = [
-        _make_candidate("body", "regex", _extract_body_regex(raw_text), 0.92, page_confidence, "body start/end regex"),
-        _make_candidate("body", "heuristic", _extract_body(raw_text), 0.86, page_confidence, "body window heuristics"),
-        _make_candidate("body", "rapid_fuzzy", _extract_body_fuzzy(raw_text), 0.70, page_confidence, "fuzzy greeting/body cue"),
+        _make_candidate("body", "regex", _extract_body_regex(raw_text), 0.81, page_confidence, "body start/end regex"),
+        _make_candidate("body", "heuristic", _extract_body(raw_text), 0.76, page_confidence, "body window heuristics"),
+        _make_candidate("body", "rapid_fuzzy", _extract_body_fuzzy(raw_text), 0.60, page_confidence, "fuzzy greeting/body cue"),
     ]
     best = _pick_best_candidate(candidates)
     return (best["value"] if best else None, [candidate for candidate in candidates if candidate])

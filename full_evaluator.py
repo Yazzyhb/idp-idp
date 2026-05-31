@@ -181,10 +181,11 @@ def calc_token_prf(pred: str, gold: str) -> tuple[float, float, float]:
     return prec, rec, f1
 
 
-def calc_field_accuracy(pred: str, gold: str, threshold: float = 0.5) -> float:
+def calc_field_accuracy(pred: str, gold: str, threshold: float = 0.65) -> float:
     """
     Field-level accuracy: 1.0 if token F1 >= threshold, else 0.0.
     NaN when no ground truth.
+    Increased threshold from 0.5 to 0.65 for more realistic evaluation.
     """
     if not gold:
         return float("nan")
@@ -324,7 +325,37 @@ def _save_heatmap(df: pd.DataFrame, stem: str, title: str) -> None:
     plt.close(fig)
 
 
-def _page1_ocr(ocr_mod, pdf_path: Path) -> tuple[str, float, float]:
+def _degrade_ocr_text(text: str, noise_level: float = 0.05) -> str:
+    """
+    Introduce realistic OCR degradation by replacing ~5% of characters
+    with similar-looking OCR confusion characters.
+    """
+    import random
+    
+    ocr_confusions = {
+        'l': ['1', '|', 'I'],
+        'O': ['0', 'Q'],
+        'i': ['1', 'j', '!'],
+        'S': ['5', '$'],
+        'm': ['rn', 'nn'],
+        'c': ['e', 'o'],
+        'a': ['e', 'o'],
+        'B': ['8', 'D'],
+        'g': ['9', 'q'],
+    }
+    
+    result = []
+    for char in text:
+        if random.random() < noise_level and char in ocr_confusions:
+            replacement = random.choice(ocr_confusions[char])
+            result.append(replacement)
+        else:
+            result.append(char)
+    
+    return ''.join(result)
+
+
+def _page1_ocr(ocr_mod, pdf_path: Path, degrade: bool = False) -> tuple[str, float, float]:
     t0 = time.perf_counter()
     raw_pages = ocr_mod.load_document(str(pdf_path))
     if not raw_pages:
@@ -334,6 +365,11 @@ def _page1_ocr(ocr_mod, pdf_path: Path) -> tuple[str, float, float]:
     pil_image = Image.fromarray(cv2.cvtColor(preprocessed, cv2.COLOR_BGR2RGB))
     ocr_result = ocr_mod._run_ocr(pil_image)
     page_text, page_confidence = ocr_mod._build_text(ocr_result)
+    
+    # Optionally degrade OCR text to simulate realistic errors
+    if degrade:
+        page_text = _degrade_ocr_text(page_text, noise_level=0.05)
+    
     ocr_time = time.perf_counter() - t0
     return page_text, page_confidence, ocr_time
 
@@ -446,7 +482,7 @@ def _read_existing_rows(csv_path: Path) -> list[dict]:
         return list(csv.DictReader(f))
 
 
-def evaluate(max_docs: int | None = None, batch_size: int | None = None, resume: bool = False):
+def evaluate(max_docs: int | None = None, batch_size: int | None = None, resume: bool = False, degrade: bool = False):
     print("Loading pipeline…")
     ocr_mod, kie_mod = _load_pipeline()
     gt_data = _load_gt()
@@ -610,7 +646,7 @@ def evaluate(max_docs: int | None = None, batch_size: int | None = None, resume:
 
             # ── OCR ─────────────────────────────────────────────────────────────
             try:
-                ocr_text, ocr_conf, ocr_time = _page1_ocr(ocr_mod, pdf_path)
+                ocr_text, ocr_conf, ocr_time = _page1_ocr(ocr_mod, pdf_path, degrade=degrade)
             except Exception as exc:
                 print(f"OCR ERROR: {exc}")
                 continue
@@ -878,5 +914,7 @@ if __name__ == "__main__":
                         help="Process documents in batches of this size (default: all)")
     parser.add_argument("--resume", action="store_true",
                         help="Skip documents already present in full_ocr_eval.csv")
+    parser.add_argument("--degrade", action="store_true",
+                        help="Add realistic OCR degradation (5% character noise) for stricter evaluation")
     args = parser.parse_args()
-    evaluate(max_docs=args.docs, batch_size=args.batch_size, resume=args.resume)
+    evaluate(max_docs=args.docs, batch_size=args.batch_size, resume=args.resume, degrade=args.degrade)
