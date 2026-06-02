@@ -252,6 +252,37 @@ _trocr_processor = None
 _trocr_model = None
 
 
+def _ocr_line_text(line) -> str:
+    if hasattr(line, "text"):
+        return str(getattr(line, "text") or "")
+    if isinstance(line, (tuple, list)) and line:
+        return str(line[0] or "")
+    return str(line or "")
+
+
+def _ocr_line_confidence(line, default: float = 0.0) -> float:
+    if hasattr(line, "confidence"):
+        try:
+            return float(getattr(line, "confidence") or default)
+        except Exception:
+            return default
+    if isinstance(line, (tuple, list)):
+        for item in line[1:]:
+            if isinstance(item, (int, float)):
+                return float(item)
+    return default
+
+
+def _ocr_line_polygon(line):
+    if hasattr(line, "polygon"):
+        return getattr(line, "polygon") or []
+    if isinstance(line, (tuple, list)):
+        for item in line[1:]:
+            if isinstance(item, (list, tuple)) and item and isinstance(item[0], (list, tuple)):
+                return item
+    return []
+
+
 def _load_trocr():
     """Lazy-load TrOCR model for handwritten text (disabled for CPU speed)."""
     global _trocr_processor, _trocr_model
@@ -281,8 +312,12 @@ def ocr_full_page(pil_image: Image.Image) -> tuple[str, float]:
     result = results[0]
     if not result.text_lines:
         return "", 0.0
-    text = "\n".join([line.text for line in result.text_lines])
-    avg_conf = float(np.mean([line.confidence for line in result.text_lines]))
+    texts = [_ocr_line_text(line).strip() for line in result.text_lines]
+    texts = [t for t in texts if t]
+    if not texts:
+        return "", 0.0
+    text = "\n".join(texts)
+    avg_conf = float(np.mean([_ocr_line_confidence(line) for line in result.text_lines]))
     return text, avg_conf
 
 
@@ -297,8 +332,12 @@ def ocr_region_printed(pil_image: Image.Image) -> tuple[str, float]:
     result = results[0]
     if not result.text_lines:
         return "", 0.0
-    text = "\n".join([line.text for line in result.text_lines])
-    avg_conf = float(np.mean([line.confidence for line in result.text_lines]))
+    texts = [_ocr_line_text(line).strip() for line in result.text_lines]
+    texts = [t for t in texts if t]
+    if not texts:
+        return "", 0.0
+    text = "\n".join(texts)
+    avg_conf = float(np.mean([_ocr_line_confidence(line) for line in result.text_lines]))
     return text, avg_conf
 
 
@@ -460,11 +499,12 @@ def mask_table_regions_from_text(ocr_result, table_bboxes):
         return ocr_result
     filtered_lines = []
     for line in ocr_result.text_lines:
-        if not line.polygon:
+        polygon = _ocr_line_polygon(line)
+        if not polygon:
             filtered_lines.append(line)
             continue
-        xs = [p[0] for p in line.polygon]
-        ys = [p[1] for p in line.polygon]
+        xs = [p[0] for p in polygon]
+        ys = [p[1] for p in polygon]
         line_x1, line_y1 = min(xs), min(ys)
         line_x2, line_y2 = max(xs), max(ys)
         in_table = False
@@ -484,7 +524,10 @@ def rebuild_body_text(filtered_lines) -> str:
     """Rebuild body text from filtered OCR lines."""
     if not filtered_lines:
         return ""
-    return "\n".join(line.text for line in filtered_lines if line.text and line.text.strip())
+    return "\n".join(
+        text for text in (_ocr_line_text(line).strip() for line in filtered_lines)
+        if text
+    )
 
 
 # ═════════════════════════════════════════════════════════════════════════════
