@@ -8,6 +8,28 @@ _trocr_processor = None
 _trocr_model = None
 
 
+def _line_text(line) -> str:
+    if hasattr(line, "text"):
+        return str(getattr(line, "text") or "")
+    if isinstance(line, (tuple, list)) and line:
+        first = line[0]
+        return str(first) if first is not None else ""
+    return str(line) if line is not None else ""
+
+
+def _line_confidence(line) -> float:
+    if hasattr(line, "confidence"):
+        try:
+            return float(getattr(line, "confidence") or 0.0)
+        except Exception:
+            return 0.0
+    if isinstance(line, (tuple, list)):
+        for item in line[1:]:
+            if isinstance(item, (int, float)):
+                return float(item)
+    return 0.0
+
+
 def _load_trocr():
     global _trocr_processor, _trocr_model
     if _trocr_model is None:
@@ -49,8 +71,13 @@ def ocr_full_page(pil_image: Image.Image) -> tuple[str, float]:
     result = results[0]
     if not result.text_lines:
         return "", 0.0
-    text = "\n".join([line.text for line in result.text_lines])
-    avg_conf = float(np.mean([line.confidence for line in result.text_lines]))
+    texts = [_line_text(line).strip() for line in result.text_lines]
+    texts = [t for t in texts if t]
+    if not texts:
+        return "", 0.0
+    text = "\n".join(texts)
+    confs = [_line_confidence(line) for line in result.text_lines]
+    avg_conf = float(np.mean(confs)) if confs else 0.0
     return text, avg_conf
 
 
@@ -64,8 +91,13 @@ def ocr_region_printed(pil_image: Image.Image) -> tuple[str, float]:
     result = results[0]
     if not result.text_lines:
         return "", 0.0
-    text = "\n".join([line.text for line in result.text_lines])
-    avg_conf = float(np.mean([line.confidence for line in result.text_lines]))
+    texts = [_line_text(line).strip() for line in result.text_lines]
+    texts = [t for t in texts if t]
+    if not texts:
+        return "", 0.0
+    text = "\n".join(texts)
+    confs = [_line_confidence(line) for line in result.text_lines]
+    avg_conf = float(np.mean(confs)) if confs else 0.0
     return text, avg_conf
 
 

@@ -12,6 +12,38 @@ from img2table.ocr.data import OCRDataframe
 from img2table.document.base import Document
 
 
+def _line_text(text_line) -> str:
+    if hasattr(text_line, "text"):
+        return str(getattr(text_line, "text") or "")
+    if isinstance(text_line, (tuple, list)) and text_line:
+        first = text_line[0]
+        return str(first) if first is not None else ""
+    return ""
+
+
+def _line_confidence(text_line, default: float = 0.9) -> float:
+    if hasattr(text_line, "confidence"):
+        try:
+            return float(getattr(text_line, "confidence") or default)
+        except Exception:
+            return default
+    if isinstance(text_line, (tuple, list)):
+        for item in text_line[1:]:
+            if isinstance(item, (int, float)):
+                return float(item)
+    return default
+
+
+def _line_polygon(text_line):
+    if hasattr(text_line, "polygon"):
+        return getattr(text_line, "polygon") or []
+    if isinstance(text_line, (tuple, list)):
+        for item in text_line[1:]:
+            if isinstance(item, (list, tuple)) and item and isinstance(item[0], (list, tuple)):
+                return item
+    return []
+
+
 # =============================================================================
 # TATR MODEL CACHE
 # =============================================================================
@@ -59,15 +91,19 @@ class PrecomputedOCRAdapter(OCRInstance):
         for page_id, ocr_result in enumerate(content):
             actual_page = self.page_index
             for line_idx, text_line in enumerate(ocr_result.text_lines):
-                if not text_line.text or not text_line.text.strip():
+                line_text = _line_text(text_line).strip()
+                if not line_text:
                     continue
-                xs = [p[0] for p in text_line.polygon]
-                ys = [p[1] for p in text_line.polygon]
+                polygon = _line_polygon(text_line)
+                if not polygon:
+                    continue
+                xs = [p[0] for p in polygon]
+                ys = [p[1] for p in polygon]
                 line_x1, line_y1 = int(min(xs)), int(min(ys))
                 line_x2, line_y2 = int(max(xs)), int(max(ys))
-                line_conf = round(100 * (text_line.confidence or 0.9))
+                line_conf = round(100 * _line_confidence(text_line, default=0.9))
                 line_width = max(1, line_x2 - line_x1)
-                words = text_line.text.split()
+                words = line_text.split()
                 if not words:
                     continue
                 total_chars = sum(len(w) for w in words)
@@ -243,16 +279,22 @@ def _extract_with_tatr(raw_img: np.ndarray, ocr_result) -> tuple[list, list]:
         num_rows, num_cols = len(rows), len(cols)
         grid = [[""] * num_cols for _ in range(num_rows)]
         for text_line in ocr_result.text_lines:
-            xs = [p[0] for p in text_line.polygon]
-            ys = [p[1] for p in text_line.polygon]
+            polygon = _line_polygon(text_line)
+            if not polygon:
+                continue
+            xs = [p[0] for p in polygon]
+            ys = [p[1] for p in polygon]
             cx = (min(xs) + max(xs)) / 2 - tx1
             cy = (min(ys) + max(ys)) / 2 - ty1
             row_idx = next((i for i, b in enumerate(rows) if b[1] <= cy <= b[3]), None)
             col_idx = next((i for i, b in enumerate(cols) if b[0] <= cx <= b[2]), None)
             if row_idx is not None and col_idx is not None:
                 existing = grid[row_idx][col_idx]
+                line_text = _line_text(text_line).strip()
+                if not line_text:
+                    continue
                 grid[row_idx][col_idx] = (
-                    (existing + " " + text_line.text).strip() if existing else text_line.text
+                    (existing + " " + line_text).strip() if existing else line_text
                 )
         filled = sum(1 for row in grid for cell in row if str(cell).strip())
         total = num_rows * num_cols
@@ -277,8 +319,11 @@ def mask_table_regions_from_text(ocr_result, table_bboxes: list[tuple], padding:
         return ocr_result.text_lines
 
     def line_centroid(text_line):
-        xs = [p[0] for p in text_line.polygon]
-        ys = [p[1] for p in text_line.polygon]
+        polygon = _line_polygon(text_line)
+        if not polygon:
+            return -1, -1
+        xs = [p[0] for p in polygon]
+        ys = [p[1] for p in polygon]
         return (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2
 
     def in_any_table(cx, cy):
@@ -295,9 +340,13 @@ def rebuild_body_text(filtered_lines: list) -> str:
         return ""
     sorted_lines = sorted(
         filtered_lines,
-        key=lambda l: (min(p[1] for p in l.polygon), min(p[0] for p in l.polygon))
+        key=lambda l: (
+            min(p[1] for p in (_line_polygon(l) or [(0, 0)])),
+            min(p[0] for p in (_line_polygon(l) or [(0, 0)])),
+        )
     )
-    return "\n".join(line.text for line in sorted_lines if line.text and line.text.strip())
+    texts = [_line_text(line).strip() for line in sorted_lines]
+    return "\n".join(t for t in texts if t)
 
 
 # =============================================================================
